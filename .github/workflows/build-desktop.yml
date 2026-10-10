@@ -256,23 +256,45 @@ jobs:
           toolset: 14.44
 
       - name: Check ATL availability.
-        # Страховка от повторения прогона #6. Стадия `Libraries/breakpad` собирает
-        # `dump_syms` через msbuild, тот тянет `common_windows_lib`, а тому нужны
-        # `atlbase.h`/`atlcomcli.h` из ATL. На образе с VS 18 ATL нет, и сборка
-        # гибнет на 27-й стадии из 32 — то есть через 40 минут после старта.
-        # Проверка занимает три секунды и делает отказ мгновенным и понятным.
+        # Страховка от повторения прогона #6, где сборка гибла на 27-й стадии из
+        # 32, через 40 минут после старта:
+        #   error C1083: Cannot open include file: 'atlbase.h'
+        # Причина была в образе: `windows-latest` переехал на VS 2026, где ATL не
+        # установлен, а стадии `Libraries/breakpad` он нужен — `dump_syms.vcxproj`
+        # тянет `common_windows_lib.vcxproj`, а тот включает `atlbase.h` и
+        # `atlcomcli.h`. Проверка стоит секунды и делает отказ мгновенным.
+        #
+        # Где лежит ATL — спрашиваем не у догадки, а у `vcvarsall`: он кладёт
+        # каталог в `INCLUDE`, то есть ровно туда, откуда его возьмёт `cl.exe`.
+        # Раскладка при этом менялась между версиями VS: `VC\atlmfc\include`
+        # в старых и `VC\Tools\MSVC\<версия>\ATLMFC\include` в VS 2022+.
+        # Прогон #7 упал именно на этой проверке: путь был захардкожен по старой
+        # раскладке, хотя ATL в образе есть.
         shell: bash
         run: |
           set -uo pipefail
-          FOUND="$(ls "/c/Program Files/Microsoft Visual Studio"/*/*/VC/atlmfc/include/atlbase.h 2>/dev/null || true)"
-          if [ -z "$FOUND" ]; then
-            echo "FAIL: ATL не найден — breakpad (Release) не соберётся." >&2
-            echo "Установленные версии Visual Studio:" >&2
-            ls -d "/c/Program Files/Microsoft Visual Studio"/*/* 2>/dev/null >&2 || true
-            exit 1
+          ATL_DIR="$(printf '%s' "${INCLUDE:-}" | tr ';' '\n' \
+            | grep -i 'atlmfc' | head -1 | tr -d '\r')"
+          if [ -z "$ATL_DIR" ]; then
+            echo "В INCLUDE нет ATLMFC — ищу по дереву Visual Studio..." >&2
+            ATL_HDR="$(find "/c/Program Files/Microsoft Visual Studio" -maxdepth 8 \
+              -iname atlbase.h 2>/dev/null | head -1 || true)"
+            if [ -z "$ATL_HDR" ]; then
+              echo "FAIL: ATL не установлен — breakpad (Release) не соберётся." >&2
+              echo "INCLUDE=${INCLUDE:-<пусто>}" >&2
+              exit 1
+            fi
+            echo "ATL найден по дереву: $ATL_HDR"
+            exit 0
           fi
-          echo "ATL найден:"
-          echo "$FOUND"
+          ATL_UNIX="$(cygpath -u "$ATL_DIR" 2>/dev/null || printf '%s' "$ATL_DIR")"
+          for hdr in atlbase.h atlcomcli.h; do
+            if [ ! -f "$ATL_UNIX/$hdr" ]; then
+              echo "FAIL: нет $hdr в $ATL_DIR — breakpad (Release) не соберётся." >&2
+              exit 1
+            fi
+          done
+          echo "ATL найден: $ATL_DIR"
 
       - name: NuGet sources.
         run: |
