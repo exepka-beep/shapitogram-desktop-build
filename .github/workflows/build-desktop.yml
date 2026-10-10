@@ -268,11 +268,50 @@ jobs:
           key: ${{ runner.OS }}-x64-qt-${{ env.CACHE_KEY }}
           restore-keys: ${{ runner.OS }}-x64-qt-
 
+      - name: Choose prepare options.
+        shell: bash
+        run: |
+          set -euo pipefail
+          # `skip-release` пропускает в prepare.py ВСЕ команды со scope `release:`
+          # (prepare.py:253) — в частности `ninja -C out/Release_x64` в breakpad и
+          # Release-конфигурацию tg_angle. Так собирает CI форка, и ровно поэтому
+          # он всегда Debug: Release-конфигураций библиотек просто не появляется,
+          # и Release-линковка падает на
+          #   LINK : fatal error LNK1181: cannot open input file
+          #          '...\breakpad\src\out\Release_x64\obj\client\windows\common.lib'
+          #
+          # Официальный скрипт самой Telegram — `scripts/build-windows.ps1:233` —
+          # зовёт `win.bat silent` БЕЗ skip-release и собирает
+          # `msbuild /p:Configuration=Release` (строка 251). Для клиента, который
+          # отдаём людям, нужен именно этот путь: Debug-сборка требует отладочный
+          # CRT (MSVCP140D.dll, VCRUNTIME140D.dll, ucrtbased.dll), который
+          # распространять нельзя, да и работает она в разы медленнее.
+          #
+          # Цена: библиотеки собираются в двух конфигурациях — времени и диска
+          # примерно вдвое больше, чем в CI форка.
+          if [ "${{ inputs.build_type }}" = "Debug" ]; then
+            echo "PREPARE_OPTS=skip-release" >> $GITHUB_ENV
+            echo "библиотеки: только Debug (skip-release) — как в CI форка"
+          else
+            echo "PREPARE_OPTS=" >> $GITHUB_ENV
+            echo "библиотеки: Debug + Release — как в build-windows.ps1"
+          fi
+
+      - name: Disk before libraries.
+        shell: bash
+        run: df -h / || true
+
       - name: Libraries.
         # Самая долгая часть: 32 сторонние библиотеки + Qt из исходников.
         # Именно здесь падал родной win.yml форка (стадия ffmpeg).
         run: |
-          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat skip-release silent
+          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat %PREPARE_OPTS% silent
+
+      - name: Disk after libraries.
+        # Диагностика на случай нехватки места: на Release-сборке конфигураций
+        # вдвое больше, и именно здесь это может выстрелить.
+        shell: bash
+        run: df -h / || true
 
       - name: Free up some disk space.
         shell: bash
