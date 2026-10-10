@@ -83,7 +83,28 @@ jobs:
 
       - name: Get repository name.
         shell: bash
-        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
+        run: |
+          # Имя каталога для клона форка. Короткое имя — не косметика.
+          #
+          # Путь раннера и так длинный (`D:\a\<repo>\<repo>\TBuild\`), а внутри
+          # подмодуля `range-v3/doc/gh-pages` лежат сгенерированные doxygen-файлы
+          # с именами под 130 символов. При `REPO_NAME=<имя репозитория>` полный
+          # путь выходит за MAX_PATH=260 и git падает на checkout:
+          #   error: unable to create file structranges_1_1any__view_...html:
+          #          Filename too long
+          #   fatal: Failed to recurse into submodule path
+          #          'Telegram/ThirdParty/range-v3'
+          # `src` экономит 23 символа (имя репозитория встречается в пути трижды)
+          # и уводит нас от лимита с запасом. Ниже `$REPO_NAME` используется
+          # только как имя каталога, поэтому переименование безопасно.
+          echo "REPO_NAME=src" >> $GITHUB_ENV
+
+      - name: Enable long paths.
+        # Вторая страховка к короткому имени каталога: `core.longpaths` заставляет
+        # Git for Windows работать через `\\?\`-пути, и ограничение снимается
+        # без правки реестра. Должно стоять до клонов.
+        shell: bash
+        run: git config --global core.longpaths true
 
       - name: Checkout this repository (overlay and scripts).
         uses: actions/checkout@v7
