@@ -52,6 +52,26 @@ BLOCK = re.compile(
 )
 
 
+def read_normalized(path):
+    """Текст файла с нормализованными переводами строк + признак «был CRLF».
+
+    Клон форка на Windows-раннере приходит с CRLF (`core.autocrlf=true`), а
+    шаблон `BLOCK` написан под LF — с CRLF он не находит блок вообще. Сейчас
+    поверх клона ложится наш overlay с LF-версией этого файла, но полагаться на
+    это не стоит: цена ошибки — сборка с чужим ключом.
+    """
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    text = raw.decode("utf-8", errors="surrogateescape").replace("\r\n", "\n")
+    return text, b"\r\n" in raw
+
+
+def write_text(path, text, crlf):
+    out = text.replace("\n", "\r\n") if crlf else text
+    with open(path, "wb") as handle:
+        handle.write(out.encode("utf-8", errors="surrogateescape"))
+
+
 def read_pem(path):
     with open(path, "rb") as handle:
         raw = handle.read().decode("utf-8", errors="replace")
@@ -108,8 +128,7 @@ def main():
         print("FAIL: %s: %s" % (type(error).__name__, error))
         return 1
 
-    with open(args.source, "rb") as handle:
-        text = handle.read().decode("utf-8", errors="surrogateescape")
+    text, crlf = read_normalized(args.source)
 
     match = BLOCK.search(text)
     if not match:
@@ -126,12 +145,10 @@ def main():
         return 1
 
     text = text[:match.start()] + cpp_block(pem_lines) + text[match.end():]
-    with open(args.source, "wb") as handle:
-        handle.write(text.encode("utf-8", errors="surrogateescape"))
+    write_text(args.source, text, crlf)
 
     # Самопроверка: перечитываем файл и убеждаемся, что ключ на месте.
-    with open(args.source, "rb") as handle:
-        check = handle.read().decode("utf-8", errors="surrogateescape")
+    check, _ = read_normalized(args.source)
     again = BLOCK.search(check)
     if not again:
         print("FAIL: после подстановки блок kOfficialRsaPublicKey не читается")

@@ -164,6 +164,30 @@ def apply_to_block(block, variant):
     return block, changes
 
 
+def read_normalized(path):
+    """Текст файла с нормализованными переводами строк + признак «был CRLF».
+
+    Клон форка на Windows-раннере приходит с CRLF: у `actions/checkout`
+    `core.autocrlf=true`, и это касается именно склонированного репозитория
+    (наш `.gitattributes` с `* -text` действует только на файлы конвейера).
+
+    Все шаблоны ниже написаны под LF, поэтому с CRLF не находился даже блок
+    стадии — `stage('ffmpeg', \"\"\"\\n` не совпадал, и шаг падал на
+    «не нашёл блок stage('ffmpeg', ...)». Нормализуем на входе, а исходные
+    переводы строк возвращаем при записи.
+    """
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    text = raw.decode("utf-8", errors="surrogateescape").replace("\r\n", "\n")
+    return text, b"\r\n" in raw
+
+
+def write_text(path, text, crlf):
+    out = text.replace("\n", "\r\n") if crlf else text
+    with open(path, "wb") as handle:
+        handle.write(out.encode("utf-8", errors="surrogateescape"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prepare", required=True, help="путь к prepare.py")
@@ -176,9 +200,10 @@ def main():
         print("FAIL: нет файла %s" % path)
         return 1
 
-    with open(path, "rb") as handle:
-        text = handle.read().decode("utf-8", errors="surrogateescape")
+    text, crlf = read_normalized(path)
     original = text
+    if crlf:
+        print("prepare.py с CRLF — нормализую для разбора, верну как было")
 
     bounds = stage_bounds(text)
     if bounds is None:
@@ -197,15 +222,13 @@ def main():
     if text == original:
         print("prepare.py уже пропатчен, менять нечего.")
     else:
-        with open(path, "wb") as handle:
-            handle.write(text.encode("utf-8", errors="surrogateescape"))
+        write_text(path, text, crlf)
         print("prepare.py пропатчен (вариант %s):" % args.variant)
     for line in changes:
         print("   %s" % line)
 
     # Самопроверка — только внутри стадии ffmpeg, чтобы не задеть libvpx.
-    with open(path, "rb") as handle:
-        check = handle.read().decode("utf-8", errors="surrogateescape")
+    check, _ = read_normalized(path)
     bounds = stage_bounds(check)
     block = check[bounds[0]:bounds[1]]
     bad = []
