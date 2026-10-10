@@ -72,7 +72,30 @@ jobs:
 
   windows:
     name: Windows x64
-    runs-on: windows-latest
+    # `windows-2022`, а НЕ `windows-latest` — и это не вкусовщина.
+    #
+    # GitHub перевёл `windows-latest`/`windows-2025` на **Visual Studio 2026
+    # (VS 18)** (changelog 14.05.2026, раскатка 08–15.06.2026). В образе с VS 18
+    # компонент ATL не установлен, а он нужен стадии `Libraries/breakpad`:
+    # `dump_syms.vcxproj` тянет `common_windows_lib.vcxproj`, который включает
+    # `atlbase.h`/`atlcomcli.h`. Прогон #6 упал ровно на этом через 39 минут:
+    #   error C1083: Cannot open include file: 'atlbase.h': No such file or directory
+    #   [27/32](Libraries/breakpad): FAILED
+    # В образе `windows-2022` живёт VS 2022 17.14, и в его списке компонентов
+    # есть `Microsoft.VisualStudio.Component.VC.ATL` и `...VC.ATLMFC`.
+    #
+    # Почему это не всплывало раньше: родной `win.yml` форка и официальный
+    # `win.yml` tdesktop собирают библиотеки с `skip-release`, то есть только
+    # Debug, и Release-ветку breakpad не трогают вовсе. Нам Release нужен —
+    # Debug требует отладочный CRT (`MSVCP140D.dll` и К°), который нельзя
+    # распространять.
+    #
+    # Важное совпадение: `windows-2022` несёт и SDK **10.0.26100.0**, и тулсет
+    # **14.44** — ровно то, что требует `docs/building-win.md` форка.
+    # Когда `windows-2022` уйдут на пенсию, возврат на VS 18 = установка ATL
+    # в существующий инстанс (`vs_installer.exe modify --add
+    # Microsoft.VisualStudio.Component.VC.ATL`).
+    runs-on: windows-2022
     # Сборка tdesktop длинная: стадия Libraries на холодном кэше ~40 минут,
     # дальше Qt и сама сборка. Потолок GitHub — 6 часов, берём 5:50.
     timeout-minutes: 350
@@ -231,6 +254,25 @@ jobs:
           arch: x64
           sdk: ${{ env.SDK }}
           toolset: 14.44
+
+      - name: Check ATL availability.
+        # Страховка от повторения прогона #6. Стадия `Libraries/breakpad` собирает
+        # `dump_syms` через msbuild, тот тянет `common_windows_lib`, а тому нужны
+        # `atlbase.h`/`atlcomcli.h` из ATL. На образе с VS 18 ATL нет, и сборка
+        # гибнет на 27-й стадии из 32 — то есть через 40 минут после старта.
+        # Проверка занимает три секунды и делает отказ мгновенным и понятным.
+        shell: bash
+        run: |
+          set -uo pipefail
+          FOUND="$(ls "/c/Program Files/Microsoft Visual Studio"/*/*/VC/atlmfc/include/atlbase.h 2>/dev/null || true)"
+          if [ -z "$FOUND" ]; then
+            echo "FAIL: ATL не найден — breakpad (Release) не соберётся." >&2
+            echo "Установленные версии Visual Studio:" >&2
+            ls -d "/c/Program Files/Microsoft Visual Studio"/*/* 2>/dev/null >&2 || true
+            exit 1
+          fi
+          echo "ATL найден:"
+          echo "$FOUND"
 
       - name: NuGet sources.
         run: |
