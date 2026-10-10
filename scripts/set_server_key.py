@@ -29,6 +29,12 @@ import os
 import re
 import sys
 
+# stdout раннера Windows — cp1252, а печатаем мы по-русски: без этого шаг
+# падает на `UnicodeEncodeError: 'charmap' codec ...`. См. bake_server_key.py.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 BEGIN = "-----BEGIN RSA PUBLIC KEY-----"
 END = "-----END RSA PUBLIC KEY-----"
 

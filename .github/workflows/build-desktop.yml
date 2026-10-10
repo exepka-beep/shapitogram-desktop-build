@@ -53,6 +53,14 @@ env:
 
   PREPARE_PATH: "Telegram/build/prepare/prepare.py"
 
+  # Наши скрипты печатают по-русски, а stdout раннера Windows — cp1252.
+  # Без этого шаг `Fetch the server RSA key` падал уже ПОСЛЕ успешного запроса:
+  #   UnicodeEncodeError: 'charmap' codec can't encode characters in position 0-5
+  # Скрипты дополнительно переключают поток сами (см. bake_server_key.py), это
+  # вторая страховка — на случай новых скриптов и сторонних инструментов.
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
   # Креды приложения. Форк XTree Gram собирался именно с этими — это
   # публичные тестовые креды tdesktop (`TDESKTOP_API_TEST` в
   # `Telegram/cmake/telegram_options.cmake`). Своего приложения у ShapitoGram

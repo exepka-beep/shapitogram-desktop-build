@@ -25,6 +25,14 @@ import urllib.request
 
 BEGIN = "-----BEGIN RSA PUBLIC KEY-----"
 
+# Раннер Windows отдаёт stdout в cp1252, и первый же print() с кириллицей валит
+# шаг: `UnicodeEncodeError: 'charmap' codec can't encode characters ...`.
+# Скрипты печатают по-русски, поэтому переключаем поток сами, не надеясь на
+# переменные окружения.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
