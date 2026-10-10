@@ -90,6 +90,38 @@ APPLY_PATCH = re.compile(
 OLD_FFMPEG = "n6.1.6"
 NEW_FFMPEG = "n8.1.3"
 
+OLD_DIFFUTILS = "mingw-w64-x86_64-diffutils"
+NEW_DIFFUTILS = "diffutils"
+
+
+def fix_msys64(text):
+    """Починить список пакетов в стадии `msys64`.
+
+    MSYS2 — rolling-репозиторий, а форк закреплён на наборе прошлого года:
+    пакет `mingw-w64-x86_64-diffutils` из него уже удалён, и стадия падает на
+    `error: target not found: mingw-w64-x86_64-diffutils` ещё до первой
+    библиотеки — `[2/32](ThirdParty/msys64): FAILED`. Это ВТОРАЯ стена после
+    ffmpeg, и она тоже не про наш код.
+
+    `diff` в сборке при этом не вызывается ни разу: патчи ложатся через
+    `git apply`, а не через утилиту. Поэтому берём одноимённый msys-пакет —
+    он существует (3.12-1), ставит `/usr/bin/diff.exe` и попадает на PATH
+    стадии, которую та же стадия и прописывает
+    (`SET PATH=%THIRDPARTY_DIR%\\msys64\\usr\\bin;%PATH%`).
+
+    Переходить на upstream-набор `mingw-w64-ucrt-x86_64-*` нельзя: он ставит
+    инструменты в `msys64\\ucrt64\\bin`, а форк ждёт
+    `ThirdParty\\msys64\\mingw64\\bin` (prepare.py:86) — поехали бы пути
+    у nasm/pkgconf/perl, и это уже не косметика.
+    """
+    if OLD_DIFFUTILS not in text:
+        return text, []
+    text = text.replace(OLD_DIFFUTILS, NEW_DIFFUTILS)
+    return text, [
+        "msys64: %s -> %s (пакет удалён из MSYS2, `diff` в сборке не нужен)"
+        % (OLD_DIFFUTILS, NEW_DIFFUTILS)
+    ]
+
 
 def stage_bounds(text):
     """Границы блока `stage('ffmpeg', \"\"\"...\"\"\")` в тексте файла."""
@@ -205,13 +237,20 @@ def main():
     if crlf:
         print("prepare.py с CRLF — нормализую для разбора, верну как было")
 
+    changes = []
+    # Стадия msys64 чинится независимо от ffmpeg: если блок ffmpeg вдруг не
+    # найдётся, полезно видеть, что вторая правка хотя бы посчитана.
+    text, msys_changes = fix_msys64(text)
+    changes += msys_changes
+
     bounds = stage_bounds(text)
     if bounds is None:
         print("FAIL: не нашёл блок stage('ffmpeg', ...) в %s" % path)
         return 1
     start, end = bounds
 
-    new_block, changes = apply_to_block(text[start:end], args.variant)
+    new_block, block_changes = apply_to_block(text[start:end], args.variant)
+    changes += block_changes
     if new_block is None:
         print("FAIL (вариант %s):" % args.variant)
         for line in changes:
@@ -238,6 +277,8 @@ def main():
         bad.append("в стадии ffmpeg осталась строка VCToolsInstallDir")
     if args.variant == "upstream" and OLD_FFMPEG in block:
         bad.append("в стадии ffmpeg остался ffmpeg %s" % OLD_FFMPEG)
+    if OLD_DIFFUTILS in check:
+        bad.append("в стадии msys64 остался удалённый пакет %s" % OLD_DIFFUTILS)
     if bad:
         print("\nFAIL: %s" % "; ".join(bad))
         return 1
