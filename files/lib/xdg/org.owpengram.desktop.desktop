@@ -1,0 +1,22 @@
+[Desktop Entry]
+Name=ShapitoGram
+Comment=New era of messaging
+TryExec=ShapitoGram
+Exec=ShapitoGram -- %U
+Icon=org.shapitogram.desktop
+Terminal=false
+StartupWMClass=org.shapitogram.desktop
+Type=Application
+Categories=Chat;Network;InstantMessaging;Qt;
+MimeType=x-scheme-handler/tg;x-scheme-handler/tonsite;
+Keywords=tg;chat;im;messaging;messenger;sms;tdesktop;shapitogram;
+Actions=quit;
+DBusActivatable=true
+SingleMainWindow=true
+X-GNOME-UsesNotifications=true
+X-GNOME-SingleWindow=true
+
+[Desktop Action quit]
+Exec=ShapitoGram -quit
+Name=Quit ShapitoGram
+Icon=application-exit

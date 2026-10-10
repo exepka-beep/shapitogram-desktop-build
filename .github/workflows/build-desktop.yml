@@ -1,0 +1,315 @@
+name: Build desktop client
+
+# Сборка ПК-клиента ShapitoGram (Windows x64).
+#
+# Почему свой воркфлоу, а не родной `win.yml` форка
+# -------------------------------------------------
+# Родной `win.yml` в `owpengram/owpengram-desktop-client` сейчас не проходит:
+# 46 прогонов, 0 успешных. Он падает на шаге `Libraries` (стадия
+# `Libraries/ffmpeg`), а `fail-fast` отменяет остальные 5 заданий матрицы —
+# поэтому до сборки дело не доходит никогда. Ровно та же стена у upstream
+# `telegramdesktop/tdesktop`: 20 из 20 последних прогонов красные.
+#
+# Что здесь иначе:
+#   * одно задание вместо матрицы из шести — нечего отменять по fail-fast,
+#     и мы не тратим время на arm64/x86/qt6, которые нам не нужны;
+#   * стадия `ffmpeg` чинится перед сборкой (см. `scripts/fix_prepare.py`);
+#   * поверх свежего клона форка накладывается наш overlay из `files/`
+#     (брендинг ShapitoGram + адрес сервера) и подставляется живой RSA-ключ
+#     сервера.
+#
+# Отличия desktop от Android/iOS, из-за которых нужен отдельный конвейер
+# ---------------------------------------------------------------------
+# В desktop адрес сервера — compile-time константа `kOfficialDefaultHost`
+# (`Telegram/SourceFiles/owpengram/owpengram_servers.cpp`), и в рантайме
+# подменяются только имя/описание/логотип. Поэтому смена сервера = пересборка.
+# Проблемы `inet_pton`, из-за которой горел Android, здесь нет: desktop
+# резолвит домены штатно.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ffmpeg_fix:
+        description: "Как чинить стадию ffmpeg (login — минимальный, upstream — как в telegramdesktop/tdesktop)"
+        type: choice
+        options: ["login", "upstream"]
+        default: "login"
+      build_type:
+        description: "Конфигурация сборки"
+        type: choice
+        options: ["Release", "Debug"]
+        default: "Release"
+
+env:
+  # Форк-основа. Коммит закреплён: ветка `dev` живёт своей жизнью, а наш
+  # overlay снят ровно с этого дерева.
+  UPSTREAM_REPO: owpengram/owpengram-desktop-client
+  UPSTREAM_REF: d5a262f7baa1a80f747b385fd06cc1f5d57dfe63
+
+  # Наш сервер. Имя и ключ тянутся с /owpengram/server-info, адрес — из overlay.
+  SERVER_INFO_URL: "https://shapitogram.xyz/owpengram/server-info"
+  APP_SERVER_HOST: "94.156.170.106"
+  APP_SERVER_PORT: "2398"
+
+  PREPARE_PATH: "Telegram/build/prepare/prepare.py"
+
+  # Креды приложения. Форк XTree Gram собирался именно с этими — это
+  # публичные тестовые креды tdesktop (`TDESKTOP_API_TEST` в
+  # `Telegram/cmake/telegram_options.cmake`). Своего приложения у ShapitoGram
+  # пока нет; когда появится — сюда придут секреты.
+  APP_API_ID: "17349"
+  APP_API_HASH: "344583e45741c457fe1862106095a5eb"
+
+jobs:
+
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    # Сборка tdesktop длинная: стадия Libraries на холодном кэше ~40 минут,
+    # дальше Qt и сама сборка. Потолок GitHub — 6 часов, берём 5:50.
+    timeout-minutes: 350
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      - name: Prepare directories.
+        run: |
+          mkdir %userprofile%\TBuild\Libraries
+          mklink /d %GITHUB_WORKSPACE%\TBuild %userprofile%\TBuild
+          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
+          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\win64>>%GITHUB_ENV%
+
+      - name: Get repository name.
+        shell: bash
+        run: echo "REPO_NAME=${GITHUB_REPOSITORY##*/}" >> $GITHUB_ENV
+
+      - name: Checkout this repository (overlay and scripts).
+        uses: actions/checkout@v7
+
+      - name: Clone upstream.
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_REF }}
+          submodules: recursive
+          path: ${{ env.TBUILD }}\${{ env.REPO_NAME }}
+
+      - name: Apply the ShapitoGram overlay.
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEST="$GITHUB_WORKSPACE/TBuild/$REPO_NAME"
+          test -d "$DEST/Telegram" || { echo "нет дерева исходников в $DEST" >&2; exit 1; }
+          test -d files || { echo "нет каталога files/ с overlay" >&2; exit 1; }
+
+          copied=0
+          while IFS= read -r -d '' src; do
+            rel="${src#files/}"
+            mkdir -p "$DEST/$(dirname "$rel")"
+            cp "$src" "$DEST/$rel"
+            copied=$((copied + 1))
+          done < <(find files -type f -print0)
+
+          echo "скопировано файлов overlay: $copied"
+          if [ "$copied" -lt 60 ]; then
+            echo "подозрительно мало файлов в overlay — ожидалось ~70" >&2
+            exit 1
+          fi
+
+      - name: Fetch the server RSA key.
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ключ сервера создаётся при первом старте и в репозитории лежать не
+          # может: собрать клиент с чужим ключом хуже, чем не собрать вовсе.
+          python scripts/bake_server_key.py \
+            --url "$SERVER_INFO_URL" --out server-rsa-public.pem
+
+      - name: Bake the key into the client.
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/set_server_key.py \
+            --source "$GITHUB_WORKSPACE/TBuild/$REPO_NAME/Telegram/SourceFiles/owpengram/owpengram_servers.cpp" \
+            --pem server-rsa-public.pem
+
+      - name: Fix the ffmpeg stage.
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/fix_prepare.py \
+            --prepare "$GITHUB_WORKSPACE/TBuild/$REPO_NAME/$PREPARE_PATH" \
+            --variant "${{ inputs.ffmpeg_fix }}"
+
+      - name: Verify branding and address.
+        shell: bash
+        run: |
+          set -uo pipefail
+          SRC="$GITHUB_WORKSPACE/TBuild/$REPO_NAME"
+          BRAND="$SRC/Telegram/SourceFiles/core/branding.h"
+          SERVERS="$SRC/Telegram/SourceFiles/owpengram/owpengram_servers.cpp"
+          fail=0
+
+          want() {  # want <описание> <файл> <regex> <есть|нет>
+            local what="$1" file="$2" pattern="$3" expect="$4" got="нет"
+            grep -qE "$pattern" "$file" && got="есть"
+            if [ "$got" = "$expect" ]; then
+              echo "  ok    $what"
+            else
+              echo "  FAIL  $what — ожидалось '$expect', получено '$got'" >&2
+              fail=1
+            fi
+          }
+
+          want "имя приложения"            "$BRAND"   'AppName = "ShapitoGram Desktop"' "есть"
+          want "платежи отключены"         "$BRAND"   'PaymentsDisabled = true'        "есть"
+          want "наш адрес сервера"         "$SERVERS" "kOfficialDefaultHost = u\"$APP_SERVER_HOST\"" "есть"
+          want "нет следов XTree Gram в branding.h"  "$BRAND"   'Xtreegram|XTree Gram' "нет"
+          want "нет следов XTree Gram в servers.cpp" "$SERVERS" 'Xtreegram|XTree Gram' "нет"
+          want "нет старого адреса"        "$SERVERS" '2\.27\.200\.203'                "нет"
+
+          # Ключ должен совпасть с тем, что отдал сервер: иначе рукопожатие
+          # провалится и клиент повиснет на запуске.
+          if python scripts/set_server_key.py --source "$SERVERS" \
+               --pem server-rsa-public.pem --check; then
+            echo "  ok    RSA-ключ совпадает с сервером"
+          else
+            echo "  FAIL  RSA-ключ не совпадает с сервером" >&2
+            fail=1
+          fi
+
+          [ "$fail" = 0 ] || exit 1
+          echo "брендинг, адрес и ключ на месте."
+
+      - name: First set up.
+        shell: bash
+        run: |
+          DOCPATH=$TBUILD/$REPO_NAME/docs/building-win.md
+          SDK="$(grep "SDK version" $DOCPATH | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/')"
+          echo "SDK=$SDK" >> $GITHUB_ENV
+
+          # Ключ кэша библиотек: меняется при правке prepare.py или SDK. Мы
+          # prepare.py патчим, поэтому кэш будет холодным — это ожидаемо.
+          echo "$(sha256sum $TBUILD/$REPO_NAME/$PREPARE_PATH | awk '{ print $1 }')" >> CACHE_KEY.txt
+          echo "$SDK" >> CACHE_KEY.txt
+          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> $GITHUB_ENV
+
+      - uses: Eden-CI/msvc-dev-cmd@master
+        name: Native Tools Command Prompt.
+        with:
+          arch: x64
+          sdk: ${{ env.SDK }}
+          toolset: 14.44
+
+      - name: NuGet sources.
+        run: |
+          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+
+      - name: ThirdParty cache.
+        id: cache-third-party
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: ${{ runner.OS }}-${{ runner.arch }}-third-party-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-${{ runner.arch }}-third-party-
+
+      - name: Libraries cache.
+        id: cache-libs
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.OS }}-x64-libs-v2-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-x64-libs-v2-
+
+      - name: Qt cache.
+        id: cache-qt
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.OS }}-x64-qt-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.OS }}-x64-qt-
+
+      - name: Libraries.
+        # Самая долгая часть: 32 сторонние библиотеки + Qt из исходников.
+        # Именно здесь падал родной win.yml форка (стадия ffmpeg).
+        run: |
+          %TBUILD%\%REPO_NAME%\Telegram\build\prepare\win.bat skip-release silent
+
+      - name: Free up some disk space.
+        shell: bash
+        run: |
+          find $LibrariesPath '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -path '*/nv-codec-headers/*' ')' -type f ')' -o -empty ')' -delete
+          df -h / 2>/dev/null || true
+
+      - name: Configure.
+        run: |
+          cd %TBUILD%\%REPO_NAME%\Telegram
+          call configure.bat x64 ^
+            -D TDESKTOP_API_ID=%APP_API_ID% ^
+            -D TDESKTOP_API_HASH=%APP_API_HASH% ^
+            -D CMAKE_CONFIGURATION_TYPES=${{ inputs.build_type }} ^
+            -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT= ^
+            -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF ^
+            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF
+
+      - name: Build.
+        run: cmake --build %TBUILD%\%REPO_NAME%\out --config ${{ inputs.build_type }} --parallel
+
+      - name: Locate the exe.
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$TBUILD/$REPO_NAME/out/${{ inputs.build_type }}"
+          EXE=$(find "$OUT" -maxdepth 2 -name 'Telegram.exe' -print -quit || true)
+          if [ -z "$EXE" ]; then
+            echo "FAIL: не нашёл Telegram.exe в $OUT" >&2
+            ls -la "$OUT" 2>/dev/null | head -30 >&2
+            exit 1
+          fi
+          echo "нашёл: $EXE"
+          ls -la "$EXE"
+          echo "EXE=$EXE" >> $GITHUB_ENV
+
+      - name: Scan the exe.
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/scan_exe.py "$EXE" \
+            --absent Xtreegram --absent "XTree Gram" --absent 2.27.200.203 \
+            --present ShapitoGram --present "$APP_SERVER_HOST" \
+            --info OwpenGram
+
+      - name: Collect artifacts.
+        # `always()`: exe — результат сборки, а проверки выше диагностика.
+        # Ровно на этом в Android-конвейере один прогон потерял 40 минут работы.
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p artifact
+          if [ -n "${EXE:-}" ] && [ -f "$EXE" ]; then
+            cp "$EXE" "artifact/ShapitoGram-${{ inputs.build_type }}-x64.exe"
+            ( cd artifact && sha256sum "ShapitoGram-${{ inputs.build_type }}-x64.exe" \
+              > SHA256SUMS.txt && cat SHA256SUMS.txt )
+          else
+            echo "exe не собран — выкладывать нечего"
+          fi
+
+      - name: Upload the exe.
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ShapitoGram-desktop-${{ inputs.build_type }}-x64
+          path: artifact\
+          retention-days: 30
+          if-no-files-found: warn

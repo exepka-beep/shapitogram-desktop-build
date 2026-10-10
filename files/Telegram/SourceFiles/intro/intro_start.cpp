@@ -1,0 +1,65 @@
+/*
+This file is part of Telegram Desktop,
+the official desktop application for the Telegram messaging service.
+
+For license and copyright information please follow this link:
+https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+*/
+#include "intro/intro_start.h"
+
+#include "lang/lang_keys.h"
+#include "intro/intro_server_select.h"
+#include "intro/intro_phone.h"
+#include "ui/widgets/buttons.h"
+#include "ui/widgets/labels.h"
+#include "main/main_account.h"
+#include "main/main_app_config.h"
+#include "main/main_domain.h"
+#include "core/application.h"
+#include "core/branding.h"
+#include "intro/intro_widget.h"
+
+namespace Intro {
+namespace details {
+
+StartWidget::StartWidget(
+	QWidget *parent,
+	not_null<Main::Account*> account,
+	not_null<Data*> data)
+: Step(parent, account, data, true) {
+	setMouseTracking(true);
+	setTitleText(rpl::single(Branding::AppName.utf16()));
+	setDescriptionText(tr::lng_intro_about());
+	show();
+}
+
+void StartWidget::submit() {
+	account().destroyStaleAuthorizationKeys();
+	// ShapitoGram: экран выбора сервера убран — сразу ввод телефона.
+	goNext<PhoneWidget>();
+}
+
+rpl::producer<QString> StartWidget::nextButtonText() const {
+	return tr::lng_start_msgs();
+}
+
+rpl::producer<> StartWidget::nextButtonFocusRequests() const {
+	return _nextButtonFocusRequests.events();
+}
+
+void StartWidget::activate() {
+	Step::activate();
+	setInnerFocus();
+}
+
+void StartWidget::setInnerFocus() {
+	_nextButtonFocusRequests.fire({});
+}
+
+bool StartWidget::hasBack() const {
+	return getData()->enterPoint != EnterPoint::Start
+		|| Core::App().domain().maybeLastOrSomeAuthedAccount() != nullptr;
+}
+
+} // namespace details
+} // namespace Intro
