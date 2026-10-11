@@ -39,6 +39,11 @@ on:
         type: choice
         options: ["Release", "Debug"]
         default: "Release"
+      parallel:
+        description: "Сколько файлов компилировать одновременно. 2 — безопасно (Release упирается в память компилятора), 4 — быстро, но прогон #9 упал на C1060 out of heap space"
+        type: choice
+        options: ["2", "3", "4"]
+        default: "2"
 
 env:
   # Форк-основа. Коммит закреплён: ветка `dev` живёт своей жизнью, а наш
@@ -444,7 +449,17 @@ jobs:
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=OFF
 
       - name: Build.
-        run: cmake --build %TBUILD%\%REPO_NAME%\out --config ${{ inputs.build_type }} --parallel
+        # 🔴 Прогон #9 упал здесь через 99:51 на Release:
+        #   qrc_emoji_2_CMAKE_.cpp(85250,1): error C1060: compiler is out of heap space
+        #   qrc_emoji_3_CMAKE_.cpp(82844,1): error C1060: compiler is out of heap space
+        #   lib_rpl/consumer.h(435,2), apiwrap.cpp(5856,1) — то же самое.
+        # Это НЕ диск (свободно 83 ГБ), а память: три гигантских сгенерированных
+        # qrc_emoji_*.cpp (~85k строк строковых литералов) компилировались
+        # одновременно, по одному cl.exe на файл, и раннер на 16 ГБ не выдержал.
+        # В Debug такого нет (в апстриме /Od и он собирает только Debug) —
+        # оптимизация Release резко поднимает аппетит компилятора на этих файлах.
+        # Поэтому параллелизм — входной параметр, по умолчанию 2.
+        run: cmake --build %TBUILD%\%REPO_NAME%\out --config ${{ inputs.build_type }} --parallel ${{ inputs.parallel }}
 
       - name: Locate the exe.
         shell: bash
