@@ -296,6 +296,55 @@ jobs:
           done
           echo "ATL найден: $ATL_DIR"
 
+      - name: Check the Updater include path.
+        # Страховка от прогона #8: `Build` падал через две минуты после старта на
+        #   error C1083: Cannot open include file: 'core/branding.h'
+        #   [TBuild\src\out\Telegram\Updater.vcxproj]
+        # `Updater` — отдельная цель CMake, и форк выдал ей в include-путях
+        # только `${lib_base_loc}`, тогда как `${src_loc}` (каталог
+        # `SourceFiles`) есть у `Telegram` и у `Packer`. При этом форк добавил в
+        # `SourceFiles/_other/updater_win.cpp` включение `core/branding.h` —
+        # файл использует `Branding::AppName` и `Branding::CompanyName`.
+        # В апстриме tdesktop `core/branding.h` нет вовсе, поэтому у них баг не
+        # виден; собственный `win.yml` форка до `Build` не доходит (все 46
+        # прогонов красные), поэтому не виден и там.
+        #
+        # Правка живёт в overlay — `scripts/make_overlay.py`, список PATCHES.
+        # Проверка стоит секунды и стоит ДО стадии `Libraries` (40 минут), так
+        # что о рассинхроне узнаём сразу, а не в конце.
+        shell: bash
+        run: |
+          set -uo pipefail
+          SRC="$GITHUB_WORKSPACE/TBuild/$REPO_NAME"
+          CML="$SRC/Telegram/CMakeLists.txt"
+          if [ ! -f "$CML" ]; then
+            echo "FAIL: нет $CML" >&2
+            exit 1
+          fi
+          if ! grep -Eq 'target_include_directories\(Updater[^)]*\$\{src_loc\}' "$CML"; then
+            echo "FAIL: у цели Updater нет \${src_loc} в include-путях." >&2
+            echo "Тогда updater_win.cpp не найдёт core/branding.h." >&2
+            grep -n 'target_include_directories(Updater' "$CML" >&2 || true
+            exit 1
+          fi
+          # Одним include-путём дело не кончается: branding.h тянет
+          # base/const_string.h, а тот включает <QtCore/QString>, плюс сам
+          # updater_win.cpp трижды зовёт QString::fromUtf8. В апстриме Updater
+          # живёт без Qt, поэтому ссылку надо добавить.
+          if ! grep -Eq 'target_link_libraries\(Updater[^)]*desktop-app::external_qt' "$CML"; then
+            echo "FAIL: цель Updater не слинкована с Qt." >&2
+            echo "Тогда updater_win.cpp не найдёт <QtCore/QString>." >&2
+            exit 1
+          fi
+          # Если форк перестанет включать branding.h, правка станет лишней —
+          # это не повод падать, но повод посмотреть глазами.
+          if ! grep -q 'include "core/branding.h"' \
+              "$SRC/Telegram/SourceFiles/_other/updater_win.cpp"; then
+            echo "ВНИМАНИЕ: updater_win.cpp больше не включает core/branding.h —" >&2
+            echo "правку в make_overlay.py (PATCHES) можно снять." >&2
+          fi
+          echo 'Updater: ${src_loc} в include-путях и ссылка на Qt на месте.'
+
       - name: NuGet sources.
         run: |
           nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"

@@ -60,6 +60,61 @@ HANDLED_SEPARATELY = {
     "Telegram/build/prepare/prepare.py",
 }
 
+# Точечные правки багов форка. Это НЕ брендинг, поэтому в RULES им не место:
+# здесь лежат исправления, без которых Windows-сборка не проходит вообще.
+#
+# Правка 1 — include-путь цели `Updater`.
+#   `Updater` — отдельная цель CMake (`Telegram/CMakeLists.txt`), и в форке ей
+#   выдан только `${lib_base_loc}`, тогда как `${src_loc}` (каталог
+#   `SourceFiles`) есть у `Telegram` и у `Packer`. При этом форк добавил в
+#   `SourceFiles/_other/updater_win.cpp` включение `core/branding.h` (файл
+#   использует `Branding::AppName` и `Branding::CompanyName`), а include-путь
+#   цели не поправил. Итог — прогон #8, шаг `Build`:
+#     error C1083: Cannot open include file: 'core/branding.h'
+#     [TBuild\src\out\Telegram\Updater.vcxproj]
+#   В апстриме tdesktop файла `core/branding.h` нет вовсе (404 на master), это
+#   добавка форка — поэтому у них `updater_win.cpp` его и не включает, и баг
+#   не виден. Собственный `win.yml` форка до `Build` тоже не доходит: все 46 его
+#   прогонов красные и падают раньше (клон / установка VS).
+#
+#   Формулировка взята у соседнего `Packer`, которому `${src_loc}` уже выдан.
+#
+# Правка 2 — Qt для той же цели `Updater`.
+#   Одним include-путём дело не кончается: `core/branding.h` тянет
+#   `base/const_string.h`, а тот сам включает `<QtCore/QString>`. Плюс форк
+#   добавил в `updater_win.cpp` три обращения к `QString::fromUtf8(...)`
+#   (строки 316, 317, 505 — реестровые DisplayName/Publisher/Icon Group и имя
+#   папки в APPDATA). В апстриме `Updater` намеренно живёт без Qt (их
+#   `updater_win.cpp` не включает ни того, ни другого), поэтому Qt ему никто не
+#   выдал. Ссылка на Qt — та же, что у соседнего `Packer`.
+#   Без неё после первой ошибки вылезла бы вторая, уже на `<QtCore/QString>`:
+#   `cl.exe` показывает только первый несобранный include в единице трансляции.
+#
+# ЛОВУШКА при пересборке overlay: RSA-ключ сервера в
+# `Telegram/SourceFiles/owpengram/owpengram_servers.cpp` этот скрипт НЕ трогает —
+# он берётся из дерева XTree Gram, то есть подставляет чужой ключ (2.27.200.203).
+# Правильный ключ в overlay кладёт отдельно `set_server_key.py`, и после каждого
+# `make_overlay.py` его надо прогнать заново, иначе в репозитории осядет ключ
+# XTree Gram. На сборку это не влияет: CI всё равно перепекает ключ свежим из
+# `/owpengram/server-info` (шаг `Bake the key into the client`), но глазами такое
+# расхождение выглядит как поломка.
+#
+# Якоря — одиночные строки, каждая уникальна в файле. Многострочных образцов
+# здесь быть не должно: файл в CRLF, и переводы строк пришлось бы подгонять.
+PATCHES = [
+    (
+        "Telegram/CMakeLists.txt",
+        "target_include_directories(Updater PRIVATE ${lib_base_loc})",
+        "target_include_directories(Updater PRIVATE ${lib_base_loc} ${src_loc})",
+    ),
+    (
+        "Telegram/CMakeLists.txt",
+        "    add_dependencies(Telegram Updater)",
+        "    add_dependencies(Telegram Updater)\n"
+        "    target_link_libraries(Updater PRIVATE desktop-app::external_qt)",
+    ),
+]
+
 TEXT_SUFFIXES = (
     ".cpp", ".h", ".hpp", ".c", ".txt", ".strings", ".rc", ".plist",
     ".xml", ".desktop", ".service", ".ps1", ".sh", ".py", ".cmake",
@@ -93,6 +148,50 @@ def apply_rules(text):
     for src, dst in RULES:
         text = text.replace(src, dst)
     return text
+
+
+def newline_of(text):
+    """Какой перевод строки в файле. Образцы PATCHES пишутся через `\\n`."""
+    return "\r\n" if "\r\n" in text else "\n"
+
+
+def apply_patches(rel, text):
+    """Наложить PATCHES на файл `rel`. Возвращает (текст, ненайденные образцы).
+
+    Ненайденный образец — это не «пропустить и поехали»: значит форк поправил
+    строку сам (или переписал файл), и правку надо пересмотреть глазами.
+    Поэтому вызывающий обязан на таком упасть.
+
+    Образцы и замены записаны с `\\n`, а файлы в дереве — в CRLF, поэтому
+    подгоняем переводы строк под конкретный файл. Якоря при этом одиночные:
+    многострочный образец без подгонки не нашёлся бы.
+    """
+    newline = newline_of(text)
+    missed = []
+    for target, old, new in PATCHES:
+        if target != rel:
+            continue
+        needle = old.replace("\n", newline)
+        if needle not in text:
+            missed.append(old)
+            continue
+        text = text.replace(needle, new.replace("\n", newline))
+    return text, missed
+
+
+def check_patches():
+    """Убедиться, что правки из PATCHES реально лежат в готовом overlay."""
+    problems = []
+    for target, _, new in PATCHES:
+        path = os.path.join(OUT, target.replace("/", os.sep))
+        if not os.path.isfile(path):
+            problems.append("%s: файла нет в overlay" % target)
+            continue
+        with open(path, "rb") as handle:
+            body = handle.read().decode("utf-8", errors="surrogateescape")
+        if new.replace("\n", newline_of(body)) not in body:
+            problems.append("%s: правки нет — %s" % (target, new.strip()))
+    return problems
 
 
 # Мастер-логотип Telegram 1024x1024 (круглый значок с самолётиком). В форке
@@ -147,6 +246,7 @@ def build():
 
     modified = git_modified(SRC)
     written, icons, skipped, missing = [], [], [], []
+    patched = []
 
     for rel in modified:
         if rel in HANDLED_SEPARATELY:
@@ -176,6 +276,15 @@ def build():
                 raw = handle.read()
             text = raw.decode("utf-8", errors="surrogateescape")
             new = apply_rules(text)
+            new, missed = apply_patches(rel, new)
+            if missed:
+                print("\nFAIL: не нашёл в %s строку для правки:" % rel)
+                for item in missed:
+                    print("   %s" % item)
+                print("Похоже, форк поправил её сам — пересмотри PATCHES.")
+                return 1
+            if any(target == rel for target, _, _ in PATCHES):
+                patched.append(rel)
             with open(dst_path, "wb") as handle:
                 handle.write(new.encode("utf-8", errors="surrogateescape"))
             written.append(rel)
@@ -186,6 +295,8 @@ def build():
     print("перекрашено текстовых файлов : %d" % len(written))
     print("иконок из оригинального art  : %d" % len(icons))
     print("пропущено (обрабатываются отдельно): %s" % ", ".join(skipped) or "—")
+    print("правок из PATCHES            : %d в %s"
+          % (len(PATCHES), ", ".join(patched) or "—"))
     if missing:
         print("\nНЕ НАЙДЕНО (%d):" % len(missing))
         for rel in missing:
@@ -208,6 +319,13 @@ def build():
         print("\nFAIL: остатки старого бренда в overlay:")
         for rel, hits in leftovers:
             print("   %s: %s" % (rel, ", ".join(sorted(hits))))
+        return 1
+
+    problems = check_patches()
+    if problems:
+        print("\nFAIL: правки PATCHES не лежат в overlay:")
+        for item in problems:
+            print("   %s" % item)
         return 1
 
     print("\noverlay готов: %s" % OUT)
@@ -252,6 +370,12 @@ def main():
             print("FAIL: остатки старого бренда:")
             for rel, hits in leftovers:
                 print("   %s: %s" % (rel, ", ".join(sorted(hits))))
+            return 1
+        problems = check_patches()
+        if problems:
+            print("FAIL: правки PATCHES не лежат в overlay:")
+            for item in problems:
+                print("   %s" % item)
             return 1
         print("overlay чист.")
         return 0

@@ -2529,6 +2529,7 @@ if (NOT DESKTOP_APP_DISABLE_AUTOUPDATE AND NOT build_macstore AND NOT build_wins
     init_non_host_target(Updater)
 
     add_dependencies(Telegram Updater)
+    target_link_libraries(Updater PRIVATE desktop-app::external_qt)
 
     nice_target_sources(Updater ${src_loc}
     PRIVATE
@@ -2549,7 +2550,7 @@ if (NOT DESKTOP_APP_DISABLE_AUTOUPDATE AND NOT build_macstore AND NOT build_wins
             base/platform/win/base_windows_safe_library.cpp
             base/platform/win/base_windows_safe_library.h
         )
-        target_include_directories(Updater PRIVATE ${lib_base_loc})
+        target_include_directories(Updater PRIVATE ${lib_base_loc} ${src_loc})
         if (MSVC)
             target_link_libraries(Updater
             PRIVATE
