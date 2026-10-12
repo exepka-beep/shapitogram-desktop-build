@@ -462,13 +462,19 @@ jobs:
         run: cmake --build %TBUILD%\%REPO_NAME%\out --config ${{ inputs.build_type }} --parallel ${{ inputs.parallel }}
 
       - name: Locate the exe.
+        # 🔴 Прогон #10 упал здесь: сборка прошла, а шаг искал `Telegram.exe`,
+        # тогда как форк собирает `ShapitoGram.exe` (бренд в APP_TITLE/EXECUTABLE).
+        # Пустой EXE -> пропущенный scan и пустой артефакт при живом exe на диске.
         shell: bash
         run: |
           set -euo pipefail
           OUT="$TBUILD/$REPO_NAME/out/${{ inputs.build_type }}"
-          EXE=$(find "$OUT" -maxdepth 2 -name 'Telegram.exe' -print -quit || true)
+          EXE=$(find "$OUT" -maxdepth 2 -name 'ShapitoGram.exe' -print -quit || true)
           if [ -z "$EXE" ]; then
-            echo "FAIL: не нашёл Telegram.exe в $OUT" >&2
+            EXE=$(find "$OUT" -maxdepth 2 -name 'Telegram.exe' -print -quit || true)
+          fi
+          if [ -z "$EXE" ]; then
+            echo "FAIL: не нашёл ShapitoGram.exe в $OUT" >&2
             ls -la "$OUT" 2>/dev/null | head -30 >&2
             exit 1
           fi
