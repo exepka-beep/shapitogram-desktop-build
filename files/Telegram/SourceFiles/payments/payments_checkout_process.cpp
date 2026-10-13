@@ -195,9 +195,8 @@ void CheckoutProcess::Start(
 		InvoiceStarGift giftInvoice,
 		Fn<void(CheckoutResult)> reactivate,
 		Fn<void(NonPanelPaymentForm)> nonPanelPaymentFormProcess) {
-	if (Branding::PaymentsDisabled) {
-		return;
-	}
+	// ShapitoGram: звёздные подарки оплачиваются звёздами, а не реальными
+	// деньгами, поэтому Branding::PaymentsDisabled их не блокирует.
 	const auto randomId = giftInvoice.randomId;
 	auto id = InvoiceId{ std::move(giftInvoice) };
 	auto &processes = LookupSessionProcesses(SessionFromId(id));

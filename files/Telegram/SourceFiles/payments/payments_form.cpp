@@ -469,7 +469,10 @@ MTPInputInvoice Form::inputInvoice() const {
 }
 
 void Form::requestForm() {
-	if (Branding::PaymentsDisabled) {
+	// ShapitoGram: реальные платежи в сборке отключены, но звёздные подарки
+	// (InvoiceStarGift) оплачиваются звёздами — их форму запрашиваем как обычно.
+	const auto starsInvoice = (std::get_if<InvoiceStarGift>(&_id.value) != nullptr);
+	if (Branding::PaymentsDisabled && !starsInvoice) {
 		// ShapitoGram: ни одного запроса к платежному бэкенду.
 		_updates.fire(Error{
 			Error::Type::Form,

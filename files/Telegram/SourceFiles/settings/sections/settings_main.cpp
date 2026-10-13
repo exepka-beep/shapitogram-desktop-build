@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/star_gift_box.h"
 #include "boxes/username_box.h"
 #include "core/application.h"
+#include "core/branding.h"
 #include "core/click_handler_types.h"
 #include "data/components/credits.h"
 #include "data/components/promo_suggestions.h"
@@ -560,7 +561,10 @@ void BuildPremiumSection(SectionBuilder &builder) {
 		.keywords = { u"work"_q, u"company"_q },
 	});
 
-	if (session->premiumCanBuy()) {
+	// ShapitoGram: подарки оплачиваются звёздами (Stars), а не реальными
+	// деньгами, поэтому Branding::PaymentsDisabled их не касается —
+	// показываем вход в подарки независимо от возможности покупки премиума.
+	if (session->premiumCanBuy() || Branding::StarsGiftsEnabled) {
 		builder.addButton({
 			.id = u"main/send-gift"_q,
 			.title = tr::lng_settings_gift_premium(),

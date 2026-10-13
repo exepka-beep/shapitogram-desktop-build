@@ -57,4 +57,9 @@ constexpr auto LinuxAppId = "org.shapitogram.desktop"_cs;
 // CheckoutProcess::Start() (payments_checkout_process.cpp).
 constexpr auto PaymentsDisabled = true;
 
+// ShapitoGram: подарки оплачиваются звёздами (Stars), а не реальными деньгами,
+// поэтому раздел подарков остаётся доступен при PaymentsDisabled = true.
+// Управляет только видимостью входа в «Отправить подарок» в настройках.
+constexpr auto StarsGiftsEnabled = true;
+
 } // namespace Branding
