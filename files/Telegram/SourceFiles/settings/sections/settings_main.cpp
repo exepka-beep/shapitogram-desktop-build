@@ -500,22 +500,27 @@ void BuildPremiumSection(SectionBuilder &builder) {
 	const auto controller = builder.controller();
 	const auto showOther = builder.showOther();
 
-	if (!session->premiumPossible()) {
+	// ShapitoGram: раздел нужен не только ради премиума — здесь же баланс
+	// звёзд, которым оплачиваются подарки. Поэтому при выключенных платежах
+	// раздел всё равно показываем, но прячем бессмысленную кнопку премиума.
+	if (!session->premiumPossible() && !Branding::StarsGiftsEnabled) {
 		return;
 	}
 
 	builder.addDivider();
 	builder.addSkip();
 
-	builder.addPremiumButton({
-		.id = u"main/premium"_q,
-		.title = tr::lng_premium_summary_title(),
-		.onClick = [=] {
-			controller->setPremiumRef("settings");
-			showOther(PremiumId());
-		},
-		.keywords = { u"subscription"_q },
-	});
+	if (!Branding::PaymentsDisabled) {
+		builder.addPremiumButton({
+			.id = u"main/premium"_q,
+			.title = tr::lng_premium_summary_title(),
+			.onClick = [=] {
+				controller->setPremiumRef("settings");
+				showOther(PremiumId());
+			},
+			.keywords = { u"subscription"_q },
+		});
+	}
 
 	session->credits().load();
 	builder.addPremiumButton({
