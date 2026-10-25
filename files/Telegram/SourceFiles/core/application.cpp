@@ -1386,6 +1386,24 @@ bool Application::openLocalUrl(const QString &url, QVariant context) {
 				}
 			}
 
+			// ShapitoGram: t.me/<username> — это адрес нашей же сети, а не
+			// официального Telegram. Если официального аккаунта нет, но есть
+			// аккаунт на своём сервере, обрабатываем ссылку в нём теми же
+			// tg://-обработчиками, вместо плашки «это официальная сеть».
+			const auto ownController = (!telegramAccount && _lastActivePrimaryWindow)
+				? _lastActivePrimaryWindow->sessionController()
+				: nullptr;
+			if (ownController) {
+				ClickHandlerContext ownCtx = my;
+				ownCtx.sessionWindow = base::make_weak(ownController);
+				const auto ownContext = QVariant::fromValue(ownCtx);
+				const auto command = urlTrimmed.mid(protocol.size());
+				if (TryRouterForLocalUrl(ownController, command)) {
+					return true;
+				}
+				return openCustomUrl("tg://", LocalUrlHandlers(), url, ownContext);
+			}
+
 			if (_lastActivePrimaryWindow) {
 				_lastActivePrimaryWindow->activate();
 				_lastActivePrimaryWindow->show(

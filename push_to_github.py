@@ -66,6 +66,12 @@ EXCLUDE_PATHS = (
     "__pycache__",
     "tools/run_build.py",
     "server-rsa-public.pem",
+    # Память проекта: адреса серверов, SSH-порты и пароли. Репозиторий публичный
+    # (private=False), поэтому папка не должна уезжать ни при каких условиях.
+    ".workbuddy-ai",
+    # 130 МБ зависимостей кошелька: заливка идёт по одному блобу через API и
+    # упирается в лимит 5000 запросов/час. Для сборки клиента не нужны.
+    "wallet/node_modules",
 )
 EXCLUDE_SUFFIXES = (".pyc",)
 EXCLUDE_MARKERS = (".bak-",)
